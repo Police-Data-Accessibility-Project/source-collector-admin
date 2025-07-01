@@ -5,10 +5,6 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "asyncio>=3.4.3",
-    "dash>=3.1.0",
-    "flask>=3.1.1",
-    "pandas>=2.3.0",
-    "pdap-access-manager==0.3.13",
-    "requests>=2.32.3",
+    "nicegui>=2.19.0",
+    "pdap-access-manager==0.4.1",
 ]

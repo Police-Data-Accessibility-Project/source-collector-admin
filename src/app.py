@@ -1,86 +1,92 @@
-# Import packages
-import asyncio
+#!/usr/bin/env python3
+"""This is just a simple authentication example.
+
+Please see the `OAuth2 example at FastAPI <https://fastapi.tiangolo.com/tutorial/security/simple-oauth2/>`_  or
+use the great `Authlib package <https://docs.authlib.org/en/v0.13/client/starlette.html#using-fastapi>`_ to implement a classing real authentication system.
+Here we just demonstrate the NiceGUI integration.
+"""
+from typing import Optional
 
 from aiohttp import ClientResponseError
-from dash import Dash, html, dcc, Output, Input, State
-from flask import Flask, redirect, session
-from pdap_access_manager import AccessManager
+from fastapi import Request
+from fastapi.responses import RedirectResponse
+from pdap_access_manager.access_manager.async_ import AccessManagerAsync
 from pdap_access_manager.models.auth import AuthInfo
-from pdap_access_manager.models.tokens import TokensInfo
+from starlette.middleware.base import BaseHTTPMiddleware
 
-from src.layouts.login import login_layout
-from src.layouts.main import main_layout
-from src.session_manager import SessionManager
+from nicegui import app, ui
 
-# Initialize the app - incorporate css
-server = Flask(__name__)
-server.secret_key = "LugubriousLugnutLitigants"  # Needed for session management
+# in reality users passwords would obviously need to be hashed
+passwords = {'user1': 'pass1', 'user2': 'pass2'}
 
-external_stylesheets = ['https://codepen.io/chriddyp/pen/bWLwgP.css']
-app = Dash(
-    __name__,
-    server=server,
-    suppress_callback_exceptions=True,
-    external_stylesheets=external_stylesheets
-)
-
-# Dummy route to simulate redirecting
-@app.server.route("/")
-def redirect_to_dash():
-    return redirect("/dash")
+unrestricted_page_routes = {'/login'}
 
 
-# Full Layout Wrapper
-app.layout = html.Div([
-    dcc.Location(id="url", refresh=False),
-    html.Div(id="page-content")
-])
+class AuthMiddleware(BaseHTTPMiddleware):
+    """This middleware restricts access to all NiceGUI pages.
 
-# Routing callback
-@app.callback(Output("page-content", "children"), Input("url", "pathname"))
-def display_page(pathname):
-    if session.get("logged_in"):
-        return main_layout()
-    return login_layout()
+    It redirects the user to the login page if they are not authenticated.
+    """
 
-# Login handler
-@app.callback(
-    Output("login-output", "children"),
-    Input("login-button", "n_clicks"),
-    State("username", "value"),
-    State("password", "value"),
-    prevent_initial_call=True
-)
-def handle_login(n_clicks, username, password):
-    if not username or not password:
-        return "Username and password required."
+    async def dispatch(self, request: Request, call_next):
+        if not app.storage.user.get('authenticated', False):
+            if not request.url.path.startswith('/_nicegui') and request.url.path not in unrestricted_page_routes:
+                return RedirectResponse(f'/login?redirect_to={request.url.path}')
+        return await call_next(request)
 
-    try:
-        # Send credentials to external auth API
-        am = AccessManager(
-            auth=AuthInfo(
-                email=username,
-                password=password
-            )
+
+app.add_middleware(AuthMiddleware)
+
+
+@ui.page('/')
+async def main_page() -> None:
+    async def logout() -> None:
+        app.storage.user.clear()
+        ui.navigate.to('/login')
+
+    with ui.column().classes('absolute-center items-center'):
+        try:
+            username = app.storage.user.get('username')
+        except KeyError:
+            ui.navigate.to('/login')
+        ui.label(f'Hello {username}!').classes('text-2xl')
+        ui.button(on_click=logout, icon='logout').props('outline round')
+
+
+@ui.page('/subpage')
+async def test_page() -> None:
+    ui.label('This is a sub page.')
+
+
+@ui.page('/login')
+async def login(redirect_to: str = '/') -> Optional[RedirectResponse]:
+    async def try_login() -> None:  # local function to avoid passing username and password as arguments
+        auth_info = AuthInfo(
+            email=username.value,
+            password=password.value
         )
-        tokens: TokensInfo = asyncio.run(am.login())
-        session_manager = SessionManager()
-        session_manager.logged_in = True
-        session_manager.tokens = tokens
-        return dcc.Location(pathname="/dash", id="login-redirect")
-    except ClientResponseError as e:
-        return f"Error: {str(e)}"
+        async with AccessManagerAsync(auth=auth_info) as am:
+            try:
+                tokens_info = await am.login()
+                app.storage.user.update(
+                    {
+                        "username": auth_info.email,
+                        "tokens": tokens_info.model_dump(mode='json'),
+                        "authenticated": True
+                    }
+                )
+                ui.navigate.to(redirect_to)  # go back to where the user wanted to go
+            except ClientResponseError as e:
+                ui.notify('Wrong username or password', color='negative')
 
-# Logout handler
-@app.callback(
-    Output("url", "pathname"),
-    Input("logout-button", "n_clicks"),
-    prevent_initial_call=True
-)
-def logout(n):
-    session.clear()
-    return "/dash"
+    if app.storage.user.get('authenticated', False):
+        return RedirectResponse('/')
+    with ui.card().classes('absolute-center'):
+        username = ui.input('Email').on('keydown.enter', try_login)
+        password = ui.input('Password', password=True, password_toggle_button=True).on('keydown.enter', try_login)
+        ui.button('Log in', on_click=try_login)
+    return None
 
-# Run the app
-if __name__ == '__main__':
-    app.run(debug=True)
+
+if __name__ in {'__main__', '__mp_main__'}:
+    ui.run(storage_secret='THIS_NEEDS_TO_BE_CHANGED')
